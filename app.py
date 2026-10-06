@@ -9,7 +9,11 @@
    - 清洁有效期（valid_until）覆盖本批次开始时间；
    - 清洁范围覆盖全部新增残留源（或标记为“全部”）；
    缺少清洁 / 清洁失效 / 覆盖不足时，批次被阻塞并保留阻塞原因；
-3. 被阻塞批次不占用器具、不产生残留；调整顺序后重新计算即可。
+3. 被阻塞批次不占用器具、不产生残留；调整顺序后重新计算即可；
+4. 器具停用检修：管理员登记器具、停用起止时间与原因，可修改或取消；
+   同一器具的有效停用时段不得重叠，起止无效、器具不存在或记录已取消时
+   拒绝变更。批次使用任一器具的时段与有效停用时段相交即阻塞（标明器具
+   与冲突时段），端点相接不算相交；受阻批次不占用器具、不留残留。
 """
 import csv
 import io
@@ -61,6 +65,15 @@ CREATE TABLE IF NOT EXISTS allergen_revision (
     new_allergens TEXT NOT NULL DEFAULT '',
     reason TEXT NOT NULL,
     changed_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS equipment_downtime (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    equipment_id INTEGER NOT NULL REFERENCES equipment(id) ON DELETE CASCADE,
+    start_at TEXT NOT NULL,
+    end_at TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT '',
+    cancelled_at TEXT
 );
 CREATE TABLE IF NOT EXISTS cleaning_deletion (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -167,6 +180,14 @@ def seed_if_empty(conn):
         conn.execute(
             "INSERT INTO cleaning(equipment_id, cleaned_at, valid_until, covers)"
             " VALUES (?,?,?,?)", (eq[eqname], c, v, covers))
+
+    # 器具停用检修：烤箱 13:00–17:00 停用（当前无批次使用，可在「器具与清洁」
+    # 登记/编辑/取消停用记录；批次时段与有效停用时段相交时会被阻塞）
+    conn.execute(
+        "INSERT INTO equipment_downtime(equipment_id, start_at, end_at, reason,"
+        " created_at) VALUES (?,?,?,?,?)",
+        (eq["烤箱"], t(13), t(17), "加热管检修，定期保养",
+         datetime.now().isoformat(timespec="minutes")))
     conn.commit()
 
 
@@ -190,6 +211,21 @@ def join_alg(lst):
 def risk_source_text(risk):
     return (f"器具「{risk['equipment']}」残留 {join_alg(risk['residual'])}"
             f"（来自批次「{risk['from_batch']}」）")
+
+
+def fmt_dt_min(value):
+    """把 datetime 或 ISO 字符串统一格式化为 YYYY-MM-DD HH:MM（仅用于展示）。"""
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.isoformat(timespec="minutes").replace("T", " ")
+    return str(value).replace("T", " ")
+
+
+def downtime_block_text(eq_name, start_at, end_at, reason):
+    return (f"器具「{eq_name}」停用检修（{fmt_dt_min(start_at)} ~ "
+            f"{fmt_dt_min(end_at)}，原因：{reason}），与本批次时段相交，"
+            f"检修期间不得安排生产")
 
 
 def risk_action_text(risk):
@@ -216,6 +252,27 @@ def revision_note_text(rev):
 
 # ---------------------------------------------------------------- 排程引擎
 
+def active_downtimes(conn):
+    """读取各器具当前有效的停用时段（未取消且起止时间可解析），按开始时间排序。
+
+    检修期间不得安排生产：批次使用某器具的时段与任一有效停用时段相交即阻塞；
+    端点相接（一个结束恰好等于另一个开始）不算相交。
+    返回 equipment_id -> [停用记录（含 start_dt/end_dt）]。
+    """
+    downtimes = {}
+    for r in conn.execute(
+            "SELECT dt.*, e.name AS equipment_name FROM equipment_downtime dt"
+            " JOIN equipment e ON e.id = dt.equipment_id"
+            " WHERE dt.cancelled_at IS NULL ORDER BY dt.start_at, dt.id"):
+        d = dict(r)
+        d["start_dt"] = parse_dt(d["start_at"])
+        d["end_dt"] = parse_dt(d["end_at"])
+        if d["start_dt"] is None or d["end_dt"] is None:
+            continue
+        downtimes.setdefault(d["equipment_id"], []).append(d)
+    return downtimes
+
+
 def compute_schedule(conn, exclude_cleaning_id=None):
     """按当前顺序（seq, 计划开始时间）逐个尝试排入，返回每批次的结果。
 
@@ -226,6 +283,7 @@ def compute_schedule(conn, exclude_cleaning_id=None):
     equip_of = {}
     for r in conn.execute("SELECT * FROM batch_equipment"):
         equip_of.setdefault(r["batch_id"], []).append(r["equipment_id"])
+    downtimes = active_downtimes(conn)
     cleanings = {}
     for r in conn.execute("SELECT * FROM cleaning ORDER BY cleaned_at, id"):
         if exclude_cleaning_id is not None and r["id"] == exclude_cleaning_id:
@@ -256,6 +314,16 @@ def compute_schedule(conn, exclude_cleaning_id=None):
         else:
             for eq in eqs:
                 eq_name = eq_names.get(eq, f"#{eq}")
+                # 器具检修停用：批次时段与有效停用时段相交即阻塞（端点相接不算相交），
+                # 该器具上不再做占用/残留判定（受阻批次本就不占用器具、不留残留）
+                dt_conflicts = [d for d in downtimes.get(eq, [])
+                                if start < d["end_dt"] and d["start_dt"] < end]
+                if dt_conflicts:
+                    for d in dt_conflicts:
+                        blocks.append(downtime_block_text(
+                            eq_name, d["start_dt"], d["end_dt"],
+                            d["reason"] or "—"))
+                    continue
                 usages = usage.get(eq, [])
                 conflicts = [u for u in usages
                              if u["start"] < end and start < u["end"]]
@@ -408,6 +476,56 @@ def cleaning_deletion_rows(conn):
     return rows
 
 
+# ------------------------------------------------------------ 器具停用检修
+
+def downtime_rows(conn, include_cancelled=True):
+    """读取停用记录（含器具名与取消状态），默认按登记时间倒序（新记录在前）。"""
+    sql = ("SELECT dt.*, e.name AS equipment_name FROM equipment_downtime dt"
+           " JOIN equipment e ON e.id = dt.equipment_id")
+    if not include_cancelled:
+        sql += " WHERE dt.cancelled_at IS NULL"
+    sql += " ORDER BY dt.id DESC"
+    return [dict(r) for r in conn.execute(sql)]
+
+
+def validate_downtime(conn, equipment_id, start_str, end_str, reason,
+                      exclude_id=None):
+    """校验停用登记/修改，返回 (equipment_row, start_dt, end_dt, error)。
+
+    校验项：器具存在；停用原因非空；起止时间可解析、结束晚于开始；
+    与同一器具的其他有效（未取消）停用时段不得重叠（端点相接允许）。
+    exclude_id 给出当前修改的记录自身，不参与重叠比较。
+    """
+    try:
+        eid = int(equipment_id)
+    except (TypeError, ValueError):
+        return None, None, None, "请选择有效的器具"
+    equipment = conn.execute(
+        "SELECT * FROM equipment WHERE id=?", (eid,)).fetchone()
+    if equipment is None:
+        return None, None, None, "器具不存在或已删除，无法登记停用"
+    if not reason:
+        return None, None, None, "请填写停用原因（如：加热管检修）"
+    start_dt = parse_dt(start_str)
+    end_dt = parse_dt(end_str)
+    if start_dt is None or end_dt is None:
+        return None, None, None, "停用起止时间无效，请使用 YYYY-MM-DDTHH:MM"
+    if end_dt <= start_dt:
+        return None, None, None, "停用时段无效：结束时间必须晚于开始时间"
+    other = conn.execute(
+        "SELECT * FROM equipment_downtime WHERE equipment_id=?"
+        " AND cancelled_at IS NULL" + (" AND id<>?" if exclude_id else ""),
+        (eid, exclude_id) if exclude_id else (eid,)).fetchall()
+    for r in other:
+        s, e = parse_dt(r["start_at"]), parse_dt(r["end_at"])
+        if s is not None and e is not None and start_dt < e and s < end_dt:
+            return None, None, None, (
+                f"同一器具的有效停用时段不得重叠：与停用记录 #{r['id']}"
+                f"（{fmt_dt_min(s)} ~ {fmt_dt_min(e)}）时间重叠")
+    return equipment, start_dt, end_dt, None
+
+
+
 # ---------------------------------------------------------------- 页面路由
 
 @app.context_processor
@@ -431,6 +549,8 @@ def index():
     return render_template("index.html", results=results,
                            accepted=accepted,
                            blocked_count=len(results) - accepted,
+                           active_downtime_rows=downtime_rows(
+                               conn, include_cancelled=False),
                            cleaning_deletions=cleaning_deletion_rows(conn),
                            latest_release=latest, release_items=items,
                            release_diff=diff, removed_ids=removed_ids)
@@ -565,7 +685,8 @@ def equipment_page():
         " JOIN equipment e ON e.id = c.equipment_id"
         " ORDER BY c.cleaned_at DESC, c.id DESC").fetchall()
     return render_template("equipment.html", equipment=equipment,
-                           cleanings=cleanings)
+                           cleanings=cleanings,
+                           downtimes=downtime_rows(conn))
 
 
 @app.post("/equipment/<int:eid>/delete")
@@ -657,6 +778,91 @@ def delete_cleaning(cid):
                            affected=affected, reason_value="")
 
 
+# ------------------------------------------------------------ 器具停用路由
+
+@app.post("/downtimes")
+def add_downtime():
+    """管理员登记器具停用检修：器具、停用起止时间与原因。
+
+    器具不存在、起止无效、原因为空或与同一器具其他有效停用时段重叠时
+    拒绝登记；排程看板随后按有效停用时段阻塞相交批次。
+    """
+    conn = get_db()
+    equipment_id = request.form.get("equipment_id", "")
+    start_str = (request.form.get("start_at", "") or "").strip()
+    end_str = (request.form.get("end_at", "") or "").strip()
+    reason = (request.form.get("reason", "") or "").strip()
+    equipment, start_dt, end_dt, error = validate_downtime(
+        conn, equipment_id, start_str, end_str, reason)
+    if error:
+        flash(f"未登记停用：{error}", "error")
+    else:
+        conn.execute(
+            "INSERT INTO equipment_downtime(equipment_id, start_at, end_at,"
+            " reason, created_at) VALUES (?,?,?,?,?)",
+            (equipment["id"], start_dt.isoformat(timespec="minutes"),
+             end_dt.isoformat(timespec="minutes"), reason,
+             datetime.now().isoformat(timespec="minutes")))
+        conn.commit()
+        flash(f"器具「{equipment['name']}」停用检修时段已登记"
+              f"（{fmt_dt_min(start_dt)} ~ {fmt_dt_min(end_dt)}），"
+              f"排程已按最新停用状态计算", "ok")
+    return redirect(url_for("equipment_page"))
+
+
+@app.post("/downtimes/<int:did>/edit")
+def edit_downtime(did):
+    """修改停用记录的器具、起止时间与原因；已取消的记录拒绝变更。"""
+    conn = get_db()
+    row = conn.execute("SELECT * FROM equipment_downtime WHERE id=?",
+                       (did,)).fetchone()
+    if row is None:
+        flash("停用记录不存在或已删除，未改动任何数据", "error")
+        return redirect(url_for("equipment_page"))
+    if row["cancelled_at"] is not None:
+        flash("停用记录已取消，不能再修改；请重新登记停用时段", "error")
+        return redirect(url_for("equipment_page"))
+    equipment_id = request.form.get("equipment_id", "")
+    start_str = (request.form.get("start_at", "") or "").strip()
+    end_str = (request.form.get("end_at", "") or "").strip()
+    reason = (request.form.get("reason", "") or "").strip()
+    equipment, start_dt, end_dt, error = validate_downtime(
+        conn, equipment_id, start_str, end_str, reason, exclude_id=did)
+    if error:
+        flash(f"未保存修改：{error}", "error")
+    else:
+        conn.execute(
+            "UPDATE equipment_downtime SET equipment_id=?, start_at=?,"
+            " end_at=?, reason=? WHERE id=?",
+            (equipment["id"], start_dt.isoformat(timespec="minutes"),
+             end_dt.isoformat(timespec="minutes"), reason, did))
+        conn.commit()
+        flash(f"停用记录 #{did} 已更新，排程已按最新停用状态计算", "ok")
+    return redirect(url_for("equipment_page"))
+
+
+@app.post("/downtimes/<int:did>/cancel")
+def cancel_downtime(did):
+    """取消停用记录：取消后不再阻塞排程；记录本身保留并标注取消状态。
+
+    记录不存在或已取消时拒绝变更；取消操作不改动停用原因与历史登记内容。
+    """
+    conn = get_db()
+    row = conn.execute("SELECT * FROM equipment_downtime WHERE id=?",
+                       (did,)).fetchone()
+    if row is None:
+        flash("停用记录不存在或已删除，未改动任何数据", "error")
+    elif row["cancelled_at"] is not None:
+        flash("该停用记录此前已取消，无需重复取消", "error")
+    else:
+        conn.execute(
+            "UPDATE equipment_downtime SET cancelled_at=? WHERE id=?",
+            (datetime.now().isoformat(timespec="minutes"), did))
+        conn.commit()
+        flash(f"停用记录 #{did} 已取消，该时段不再阻塞排程", "ok")
+    return redirect(url_for("equipment_page"))
+
+
 # ---------------------------------------------------------------- 导出
 
 def export_rows(results):
@@ -673,20 +879,35 @@ def export_rows(results):
             "planned_end": r["end"].isoformat(timespec="minutes") if r["end"] else "",
             "status": "已排入" if r["status"] == "accepted" else "已拒绝",
         }
+
+        def with_note(text):
+            return f"{text}；{note}" if note else text
+
         if r["risks"]:
             for risk in r["risks"]:
                 row = dict(base)
                 row["risk_source"] = risk_source_text(risk)
-                row["action"] = risk_action_text(risk)
-                if note:
-                    row["action"] = f"{row['action']}；{note}"
+                row["action"] = with_note(risk_action_text(risk))
                 rows.append(row)
         else:
-            base["risk_source"] = "无前置残留" if r["status"] == "accepted" else "—"
-            base["action"] = "；".join(r["blocks"]) if r["blocks"] else "无交叉污染风险"
-            if note:
-                base["action"] = f"{base['action']}；{note}"
-            rows.append(base)
+            row = dict(base)
+            row["risk_source"] = "无前置残留" if r["status"] == "accepted" else "—"
+            row["action"] = with_note(
+                "；".join(r["blocks"]) if r["blocks"] else "无交叉污染风险")
+            rows.append(row)
+        # 阻塞批次若同时带有风险评估结果（某些器具上的残留、另一些器具上的
+        # 时段冲突/停用检修），把未写进风险行的阻塞原因（如器具停用）补成独立行，
+        # 保证“已拒绝”原因（含器具与冲突时段）在导出中完整可见
+        if r["status"] == "blocked" and r["risks"] and r["blocks"]:
+            covered = {risk["block_reason"] for risk in r["risks"]
+                       if risk["level"] == "blocked"}
+            for reason in r["blocks"]:
+                if reason in covered:
+                    continue
+                row = dict(base)
+                row["risk_source"] = "—"
+                row["action"] = with_note(f"⛔ {reason}")
+                rows.append(row)
     return rows
 
 
@@ -716,12 +937,66 @@ def export_json():
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "app_url": APP_URL,
         "schedule": export_rows(results),
+        "equipment_downtimes": downtime_export_rows(conn),
         "cleaning_deletions": cleaning_deletion_export_rows(conn),
     }
     return Response(json.dumps(payload, ensure_ascii=False, indent=2),
                     mimetype="application/json; charset=utf-8",
                     headers={"Content-Disposition":
                              "attachment; filename=schedule_risk.json"})
+
+
+# ---------------------------------------------------- 器具停用检修导出
+
+def downtime_export_rows(conn):
+    """把停用记录展开为可导出的结构（反映最新停用/取消状态）。"""
+    rows = []
+    for d in downtime_rows(conn):
+        rows.append({
+            "downtime_id": d["id"],
+            "equipment_id": d["equipment_id"],
+            "equipment": d["equipment_name"],
+            "start_at": d["start_at"],
+            "end_at": d["end_at"],
+            "reason": d["reason"],
+            "created_at": d["created_at"],
+            "cancelled": bool(d["cancelled_at"]),
+            "cancelled_at": d["cancelled_at"] or "",
+            "status": "已取消" if d["cancelled_at"] else "有效",
+        })
+    return rows
+
+
+@app.route("/export/downtimes.csv")
+def export_downtimes_csv():
+    out = io.StringIO()
+    out.write("﻿")  # BOM，便于 Excel 识别中文
+    w = csv.writer(out)
+    w.writerow(["停用序号", "器具", "停用开始", "停用结束", "停用原因",
+                "登记时间", "状态", "取消时间"])
+    for d in downtime_export_rows(get_db()):
+        w.writerow([d["downtime_id"], d["equipment"],
+                    d["start_at"].replace("T", " "),
+                    d["end_at"].replace("T", " "), d["reason"],
+                    (d["created_at"] or "").replace("T", " "),
+                    d["status"],
+                    (d["cancelled_at"] or "").replace("T", " ")])
+    return Response(out.getvalue(), mimetype="text/csv; charset=utf-8",
+                    headers={"Content-Disposition":
+                             "attachment; filename=equipment_downtimes.csv"})
+
+
+@app.route("/export/downtimes.json")
+def export_downtimes_json():
+    payload = {
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "app_url": APP_URL,
+        "equipment_downtimes": downtime_export_rows(get_db()),
+    }
+    return Response(json.dumps(payload, ensure_ascii=False, indent=2),
+                    mimetype="application/json; charset=utf-8",
+                    headers={"Content-Disposition":
+                             "attachment; filename=equipment_downtimes.json"})
 
 
 # ---------------------------------------------------- 清洁删除审计导出
@@ -933,7 +1208,8 @@ def publish_release():
                 parts.append(f"「{r['name']}」（{reason}）")
             flash(f"未发布交接版：{len(blocked)} 个批次处于阻塞状态——"
                   + "、".join(parts)
-                  + "。请先调整顺序、补登清洁或修订批次后再发布。", "error")
+                  + "。请先调整顺序、补登清洁、修订批次，或取消/调整器具停用时段后再发布。",
+                  "error")
             return redirect(url_for("index"))
         version = conn.execute(
             "SELECT COALESCE(MAX(version),0)+1 AS v FROM release_version"

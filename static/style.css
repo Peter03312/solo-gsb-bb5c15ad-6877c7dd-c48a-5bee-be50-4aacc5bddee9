@@ -187,3 +187,9 @@ tr.removed td > * { opacity: .72; }
 .release-panel h2 .badge { vertical-align: middle; }
 .release-diff { min-width: 90px; }
 .ops .btn { margin-right: 4px; }
+
+/* 器具停用检修 */
+tr.cancelled-row td { background: #fafafa; color: var(--muted); }
+tr.cancelled-row td > * { opacity: .8; }
+.cancel-form { margin-top: 6px; }
+.downtime-panel h2 { color: var(--bad); }

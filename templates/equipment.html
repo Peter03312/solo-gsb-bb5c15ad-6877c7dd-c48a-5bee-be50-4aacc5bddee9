@@ -84,4 +84,99 @@
   </table>
   {% endif %}
 </section>
+
+<section class="panel">
+  <h2>器具停用检修登记</h2>
+  <p class="hint">器具检修期间不得安排生产：批次使用任一器具的时段与<strong>有效</strong>停用时段
+    <strong>相交</strong>即被阻塞（标明器具与冲突时段），端点相接不算相交；受阻批次不占用器具、
+    不留残留。同一器具的有效停用时段不得重叠。停用记录可修改或取消，已取消的记录不再阻塞排程。</p>
+  {% if not equipment %}
+  <p class="empty">请先添加器具。</p>
+  {% else %}
+  <form method="post" action="{{ url_for('add_downtime') }}" class="grid-form">
+    <label>器具
+      <select name="equipment_id" required>
+        {% for e in equipment %}<option value="{{ e.id }}">{{ e.name }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>停用开始
+      <input type="datetime-local" name="start_at" required>
+    </label>
+    <label>停用结束
+      <input type="datetime-local" name="end_at" required>
+    </label>
+    <label>停用原因（必填）
+      <input type="text" name="reason" required placeholder="如：加热管检修、定期保养">
+    </label>
+    <div class="form-actions"><button class="btn" type="submit">登记停用</button></div>
+  </form>
+  {% endif %}
+</section>
+
+<section class="panel downtime-log">
+  <h2>停用记录（含已取消）</h2>
+  <p class="hint">有效停用时段会实时反映到看板与 CSV / JSON 导出；已取消的记录保留留档，不能再修改。</p>
+  {% if not downtimes %}<p class="empty">暂无停用记录。</p>{% else %}
+  <table>
+    <thead>
+      <tr><th>ID</th><th>器具</th><th>停用时段</th><th>原因</th><th>状态</th><th>操作</th></tr>
+    </thead>
+    <tbody>
+    {% for d in downtimes %}
+      <tr class="{{ 'cancelled-row' if d.cancelled_at }}">
+        <td>{{ d.id }}</td>
+        <td><strong>{{ d.equipment_name }}</strong></td>
+        <td class="time">{{ d.start_at.replace('T', ' ') }} ~ {{ d.end_at.replace('T', ' ') }}</td>
+        <td>{{ d.reason }}</td>
+        <td>
+          {% if d.cancelled_at %}
+          <span class="badge muted">已取消</span><br>
+          <span class="muted time">取消于 {{ d.cancelled_at.replace('T', ' ') }}</span>
+          {% else %}
+          <span class="badge bad">有效</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if not d.cancelled_at %}
+          <details class="rev">
+            <summary>修改</summary>
+            <form method="post" action="{{ url_for('edit_downtime', did=d.id) }}" class="rev-form">
+              <label>器具
+                <select name="equipment_id" required>
+                  {% for e in equipment %}
+                  <option value="{{ e.id }}" {% if e.id == d.equipment_id %}selected{% endif %}>{{ e.name }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <label>停用开始
+                <input type="datetime-local" name="start_at" value="{{ d.start_at }}" required>
+              </label>
+              <label>停用结束
+                <input type="datetime-local" name="end_at" value="{{ d.end_at }}" required>
+              </label>
+              <label>停用原因（必填）
+                <input type="text" name="reason" value="{{ d.reason }}" required>
+              </label>
+              <div><button class="btn small" type="submit">保存修改</button></div>
+            </form>
+          </details>
+          <form method="post" action="{{ url_for('cancel_downtime', did=d.id) }}"
+                onsubmit="return confirm('取消停用记录 #{{ d.id }}？取消后该时段不再阻塞排程（记录会保留并标注已取消）。');"
+                class="cancel-form">
+            <button class="btn ghost small" type="submit">取消停用</button>
+          </form>
+          {% else %}
+          <span class="muted">—</span>
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <div class="toolbar" style="margin-top:12px;">
+    <a class="btn ghost small" href="{{ url_for('export_downtimes_csv') }}">⬇ 停用记录 CSV</a>
+    <a class="btn ghost small" href="{{ url_for('export_downtimes_json') }}">⬇ 停用记录 JSON</a>
+  </div>
+  {% endif %}
+</section>
 {% endblock %}

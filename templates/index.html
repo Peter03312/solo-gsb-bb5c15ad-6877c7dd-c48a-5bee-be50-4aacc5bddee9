@@ -12,16 +12,45 @@
     <button class="btn" type="submit">⟳ 重新计算</button>
   </form>
   <form method="post" action="{{ url_for('publish_release') }}"
-        onsubmit="return confirm('将按当前器具占用、过敏原与清洁规则重新计算；存在阻塞批次时不会生成版本。确认发布交接版？');">
+        onsubmit="return confirm('将按当前器具占用、过敏原、清洁规则与器具停用状态重新计算；存在阻塞批次（含与有效停用时段相交）时不会生成版本。确认发布交接版？');">
     <button class="btn" type="submit">📦 发布交接版</button>
   </form>
   <a class="btn ghost" href="{{ url_for('export_csv') }}">⬇ 导出 CSV</a>
   <a class="btn ghost" href="{{ url_for('export_json') }}">⬇ 导出 JSON</a>
   <a class="btn ghost" href="{{ url_for('export_cleaning_deletions_csv') }}">🧾 删除记录 CSV</a>
   <a class="btn ghost" href="{{ url_for('export_cleaning_deletions_json') }}">🧾 删除记录 JSON</a>
+  <a class="btn ghost" href="{{ url_for('export_downtimes_csv') }}">🔧 停用记录 CSV</a>
+  <a class="btn ghost" href="{{ url_for('export_downtimes_json') }}">🔧 停用记录 JSON</a>
   <span class="hint">用 ↑↓ 调整顺序后自动重新计算；被阻塞批次不占用器具，阻塞原因保留在“风险来源”列。
+    器具检修停用期间不得安排生产：批次时段与有效停用时段相交即阻塞（端点相接不算相交）。
     「发布交接版」把当前排程固化为可追溯快照，全部批次可排入时才会生成。</span>
 </div>
+
+{% if active_downtime_rows %}
+<section class="panel downtime-panel">
+  <h2>有效器具停用时段（检修期间不得安排生产）</h2>
+  <table>
+    <thead>
+      <tr><th>ID</th><th>器具</th><th>停用开始</th><th>停用结束</th><th>停用原因</th><th>登记时间</th></tr>
+    </thead>
+    <tbody>
+    {% for d in active_downtime_rows %}
+      <tr>
+        <td>{{ d.id }}</td>
+        <td><strong>{{ d.equipment_name }}</strong></td>
+        <td class="time">{{ d.start_at.replace('T', ' ') }}</td>
+        <td class="time">{{ d.end_at.replace('T', ' ') }}</td>
+        <td>{{ d.reason }}</td>
+        <td class="time muted">{{ (d.created_at or '').replace('T', ' ') }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p class="hint" style="margin-top:8px;">
+    在 <a href="{{ url_for('equipment_page') }}">器具与清洁</a> 可登记、修改或取消停用记录；
+    取消后该时段立即不再阻塞排程（历史记录与取消状态仍可查询）。</p>
+</section>
+{% endif %}
 
 {% if not results %}
 <p class="empty">还没有批次，请先到 <a href="{{ url_for('batches') }}">批次管理</a> 录入。</p>
