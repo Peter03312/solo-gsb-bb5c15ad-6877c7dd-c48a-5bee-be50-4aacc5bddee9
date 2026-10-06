@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}修改停用记录 #{{ outage.id }} · 共享厨房过敏原排程{% endblock %}
+{% block content %}
+<section class="panel">
+  <h2>修改器具停用记录 #{{ outage.id }}</h2>
+  <p class="hint">
+    <a href="{{ url_for('equipment_page') }}">← 返回器具与清洁</a>
+    （原记录：{{ outage.equipment_name }} ·
+    {{ outage.start_time.replace('T', ' ') }} ~ {{ outage.end_time.replace('T', ' ') }}）
+  </p>
+  {% if errors %}
+  <div class="flash error">
+    未保存修改：
+    <ul class="reasons">
+      {% for e in errors %}<li class="block">⛔ {{ e }}</li>{% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+  {% if not equipment %}
+  <p class="empty">尚未登记器具，无法登记停用。</p>
+  {% else %}
+  <form method="post" class="grid-form outage-form">
+    <label>器具
+      <select name="equipment_id" required>
+        {% for e in equipment %}
+        <option value="{{ e.id }}" {% if form.equipment_id == e.id %}selected{% endif %}>{{ e.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>停用开始
+      <input type="datetime-local" name="start_time" required value="{{ form.start_time }}">
+    </label>
+    <label>停用结束
+      <input type="datetime-local" name="end_time" required value="{{ form.end_time }}">
+    </label>
+    <label class="reason-wide">停用原因（必填）
+      <input type="text" name="reason" required value="{{ form.reason }}"
+             placeholder="如：温控元件故障，厂家检修更换">
+    </label>
+    <div class="form-actions">
+      <button class="btn" type="submit">保存修改</button>
+      <a class="btn ghost" href="{{ url_for('equipment_page') }}">取消</a>
+    </div>
+  </form>
+  <p class="hint">同一器具的有效停用时段不得重叠（端点相接允许）；
+    保存后看板、实时导出与发布交接版的重算均按最新停用状态执行。</p>
+  {% endif %}
+</section>
+{% endblock %}

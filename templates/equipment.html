@@ -84,4 +84,77 @@
   </table>
   {% endif %}
 </section>
+
+<section class="panel">
+  <h2>器具检修停用</h2>
+  <p class="hint">器具检修期间不得安排生产：批次使用任一器具的时段与<strong>有效</strong>停用时段
+    <strong>相交</strong>即被阻塞（端点相接不算相交），标明器具与冲突时段，受阻批次不占用器具也不留下残留。
+    同一器具的有效停用时段不得重叠；可修改或取消停用记录，取消后重算即恢复，取消状态仍可查询。</p>
+  {% if not equipment %}
+  <p class="empty">请先添加器具。</p>
+  {% else %}
+  <form method="post" action="{{ url_for('add_outage') }}" class="grid-form">
+    <label>器具
+      <select name="equipment_id" required>
+        {% for e in equipment %}<option value="{{ e.id }}">{{ e.name }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>停用开始
+      <input type="datetime-local" name="start_time" required>
+    </label>
+    <label>停用结束
+      <input type="datetime-local" name="end_time" required>
+    </label>
+    <label class="reason-wide">停用原因（必填）
+      <input type="text" name="reason" required placeholder="如：温控元件故障，厂家检修更换">
+    </label>
+    <div class="form-actions"><button class="btn" type="submit">登记停用</button></div>
+  </form>
+  {% endif %}
+
+  {% if not outages %}<p class="empty">暂无停用记录。</p>{% else %}
+  <table class="outage-table">
+    <thead><tr><th>ID</th><th>器具</th><th>停用开始</th><th>停用结束</th>
+      <th>停用原因</th><th>状态</th><th>取消信息</th><th>操作</th></tr></thead>
+    <tbody>
+    {% for o in outages %}
+      <tr class="{{ 'cancelled-row' if o.cancelled }}">
+        <td>{{ o.id }}</td>
+        <td><strong>{{ o.equipment_name }}</strong></td>
+        <td class="time">{{ o.start_time.replace('T', ' ') }}</td>
+        <td class="time">{{ o.end_time.replace('T', ' ') }}</td>
+        <td>{{ o.reason }}</td>
+        <td>
+          {% if o.cancelled %}<span class="badge muted">已取消</span>
+          {% else %}<span class="badge bad">停用中</span>{% endif %}
+        </td>
+        <td>
+          {% if o.cancelled %}
+          <span class="muted time">{{ o.cancelled_at.replace('T', ' ') }}</span><br>
+          <span class="muted">{{ o.cancel_reason }}</span>
+          {% else %}<span class="muted">—</span>{% endif %}
+        </td>
+        <td class="ops">
+          {% if not o.cancelled %}
+          <a class="btn small" href="{{ url_for('edit_outage', oid=o.id) }}">修改</a>
+          <details class="rev cancel-rev">
+            <summary>取消停用</summary>
+            <form method="post" action="{{ url_for('cancel_outage', oid=o.id) }}"
+                  class="rev-form cancel-form"
+                  onsubmit="return confirm('取消后该时段不再阻塞排程，确定取消此停用记录？');">
+              <label>取消原因（必填）
+                <input type="text" name="cancel_reason" required
+                       placeholder="如：检修提前完成，恢复使用">
+              </label>
+              <div><button class="btn danger small" type="submit">确认取消</button></div>
+            </form>
+          </details>
+          {% else %}<span class="muted">不可修改</span>{% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
 {% endblock %}

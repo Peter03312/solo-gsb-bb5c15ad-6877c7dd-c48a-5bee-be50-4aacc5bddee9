@@ -19,7 +19,10 @@
   <a class="btn ghost" href="{{ url_for('export_json') }}">⬇ 导出 JSON</a>
   <a class="btn ghost" href="{{ url_for('export_cleaning_deletions_csv') }}">🧾 删除记录 CSV</a>
   <a class="btn ghost" href="{{ url_for('export_cleaning_deletions_json') }}">🧾 删除记录 JSON</a>
+  <a class="btn ghost" href="{{ url_for('export_outages_csv') }}">🔧 停用记录 CSV</a>
+  <a class="btn ghost" href="{{ url_for('export_outages_json') }}">🔧 停用记录 JSON</a>
   <span class="hint">用 ↑↓ 调整顺序后自动重新计算；被阻塞批次不占用器具，阻塞原因保留在“风险来源”列。
+    器具检修停用期间与其时段相交的批次同样被阻塞（端点相接不算）。
     「发布交接版」把当前排程固化为可追溯快照，全部批次可排入时才会生成。</span>
 </div>
 
@@ -110,6 +113,34 @@
   </tbody>
 </table>
 {% endif %}
+
+<section class="panel outage-panel">
+  <h2>当前器具停用（检修期间不得安排生产）</h2>
+  <p class="hint">仅列出<strong>有效</strong>停用记录；已取消记录可在
+    <a href="{{ url_for('equipment_page') }}">器具与清洁</a> 页面及停用记录导出中查询。
+    批次时段与停用时段相交即被阻塞并标明冲突时段，端点相接不算相交。</p>
+  {% if not active_outage_rows %}
+  <p class="empty">当前没有有效的器具停用记录。</p>
+  {% else %}
+  <table>
+    <thead>
+      <tr><th>#</th><th>器具</th><th>停用开始</th><th>停用结束</th><th>停用原因</th><th>登记时间</th></tr>
+    </thead>
+    <tbody>
+    {% for o in active_outage_rows %}
+      <tr>
+        <td>{{ o.id }}</td>
+        <td><strong>{{ o.equipment_name }}</strong></td>
+        <td class="time">{{ o.start_time.replace('T', ' ') }}</td>
+        <td class="time">{{ o.end_time.replace('T', ' ') }}</td>
+        <td>{{ o.reason }}</td>
+        <td class="time muted">{{ o.created_at.replace('T', ' ') }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
 
 <section class="panel release-panel">
   <h2>最新交接版{% if latest_release %} · v{{ latest_release.version }}{% endif %}</h2>

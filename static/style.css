@@ -187,3 +187,11 @@ tr.removed td > * { opacity: .72; }
 .release-panel h2 .badge { vertical-align: middle; }
 .release-diff { min-width: 90px; }
 .ops .btn { margin-right: 4px; }
+
+/* 器具检修停用 */
+.grid-form .reason-wide { grid-column: 1 / -1; }
+.outage-table details.cancel-rev summary { white-space: nowrap; }
+.outage-table .cancel-form { min-width: 220px; }
+tr.cancelled-row td { background: #f9fafb; }
+tr.cancelled-row td > * { opacity: .78; }
+.outage-panel table { margin-top: 8px; }
